@@ -83,14 +83,15 @@ function mdTable(findings: Finding[]): string {
   ].join('\n') + '\n';
 }
 function renderCheck(snapshot: Snapshot, findings: Finding[], format: string): void {
-  if (format === 'json') { console.log(JSON.stringify({findings, warnings:snapshot.warnings, scannedFiles:snapshot.files},null,2)); return; }
+  if (format === 'json') { console.log(JSON.stringify({findings, warnings:snapshot.warnings, securityIssues:snapshot.securityIssues ?? [], scannedFiles:snapshot.files},null,2)); return; }
   if (format === 'markdown') {
-    console.log('## TaskLatch authorization check\n\n' + mdTable(findings) + '\n' + snapshot.warnings.map(w=>`- ${escapeMd(w)}`).join('\n') + '\n\n*Static checks only; not runtime enforcement.*');
+    console.log('## TaskLatch authorization check\n\n' + mdTable(findings) + '\n' + (snapshot.securityIssues?.length ? '**Blocking security issues:**\n' + snapshot.securityIssues.map(w=>`- ${escapeMd(w)}`).join('\n') + '\n' : '') + snapshot.warnings.map(w=>`- ${escapeMd(w)}`).join('\n') + '\n\n*Static checks only; not runtime enforcement.*');
     return;
   }
   console.log(`TaskLatch: ${findings.length} capability exposure(s); ${snapshot.files.length} scanned file(s)`);
   for (const f of findings) console.log(formatFinding(f));
   for (const w of snapshot.warnings) console.log(`WARN: ${w}`);
+  for (const issue of snapshot.securityIssues ?? []) console.log(`SECURITY ERROR: ${issue}`);
 }
 function renderDiff(report: DiffReport, format: string): void {
   if (format === 'json') { console.log(JSON.stringify(report,null,2)); return; }
@@ -98,6 +99,8 @@ function renderDiff(report: DiffReport, format: string): void {
     console.log('## TaskLatch permission regression report\n\n' +
       `New: ${report.added.length} | Removed: ${report.removed.length} | Retained: ${report.retained}\n\n` +
       mdTable(report.added) + '\n' +
+      (report.permissionRegressions.length ? '**GitHub workflow permission regressions (blocking):**\n' + report.permissionRegressions.map(x=>`- ${escapeMd(x)}`).join('\n') + '\n\n' : '') +
+      (report.securityIssues.length ? '**Unresolved security coverage (blocking):**\n' + report.securityIssues.map(x=>`- ${escapeMd(x)}`).join('\n') + '\n\n' : '') +
       (report.contractExpansions.length ? '**Potential policy weakenings requiring review:**\n' + report.contractExpansions.map(x=>`- ${escapeMd(x.agent)}/${escapeMd(x.task)} (${escapeMd(x.change)}): ${escapeMd(x.pattern)}`).join('\n') : 'No potential policy weakening detected.') + '\n\n' +
       report.warnings.map(w=>`- ${escapeMd(w)}`).join('\n') + '\n\n*No actual MCP servers or external tools were executed.*');
     return;
@@ -106,6 +109,8 @@ function renderDiff(report: DiffReport, format: string): void {
   for (const f of report.added) console.log('+ ' + formatFinding(f));
   for (const e of report.removed) console.log(`- ${e.agent}/${e.task} ${e.capability}`);
   for (const e of report.contractExpansions) console.log(`POLICY REVIEW: ${e.agent}/${e.task} ${e.change} ${e.pattern}`);
+  for (const regression of report.permissionRegressions) console.log(`PERMISSION REGRESSION: ${regression}`);
+  for (const issue of report.securityIssues) console.log(`SECURITY ERROR: ${issue}`);
   for (const warning of report.warnings) console.log(`WARN: ${warning}`);
 }
 function init(root: string): void {
@@ -159,13 +164,15 @@ function main(): void {
     if (format === 'json') console.log(JSON.stringify(snapshot,null,2));
     else for (const e of snapshot.exposures) console.log(`${e.agent}/${e.task} ${e.capability} [${e.kind}] (${e.source})`);
     for (const warning of snapshot.warnings) if (format !== 'json') console.log('WARN: '+warning);
+    for (const issue of snapshot.securityIssues ?? []) if (format !== 'json') console.log('SECURITY ERROR: '+issue);
+    if ((snapshot.securityIssues?.length ?? 0) > 0) process.exitCode = 1;
     return;
   }
   const policy = readPolicy(root,policyName)!;
   if (cmd === 'check') {
     const findings = check(snapshot,policy);
     renderCheck(snapshot,findings,format);
-    if (shouldFail(findings,failOn) || snapshot.exposures.length === 0) process.exitCode = 1;
+    if (shouldFail(findings,failOn) || snapshot.exposures.length === 0 || (snapshot.securityIssues?.length ?? 0) > 0) process.exitCode = 1;
     return;
   }
   if (!opts.base) throw new Error('diff requires --base GIT_REF');
@@ -173,7 +180,7 @@ function main(): void {
   const oldPolicy = readBasePolicy(root,opts.base,policyName);
   const report = diffSnapshots(before,snapshot,oldPolicy,policy);
   renderDiff(report,format);
-  if (shouldFail(report.added,failOn) || report.contractExpansions.length || snapshot.exposures.length === 0) process.exitCode = 1;
+  if (shouldFail(report.added,failOn) || report.contractExpansions.length || report.permissionRegressions.length || report.securityIssues.length || snapshot.exposures.length === 0) process.exitCode = 1;
 }
 try { main(); } catch (error) {
   console.error(`TaskLatch error: ${(error as Error).message}`);

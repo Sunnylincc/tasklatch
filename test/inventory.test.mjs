@@ -49,3 +49,32 @@ test('does not follow symlinked manifests', () => {
     assert.throws(()=>scanSources(workingTree(root)),/Unsafe source file/);
   });
 });
+
+test('scans every supported workflow instead of silently stopping at 300 files', () => {
+  fixture(({root,write})=>{
+    for (let i=0; i<315; i++) write(`.github/workflows/w${String(i).padStart(3,'0')}.yml`, 'permissions:\n  contents: read\n');
+    const scan=scanSources(workingTree(root));
+    assert.equal(scan.files.length,315);
+    assert.equal(scan.exposures.length,315);
+    assert.ok(scan.files.includes('.github/workflows/w314.yml'));
+    assert.deepEqual(scan.securityIssues,[]);
+  });
+});
+test('unreadable enumerated sources are explicitly treated as incomplete', () => {
+  const scan=scanSources({list:()=>['.mcp.json'],read:()=>undefined});
+  assert.match(scan.securityIssues[0],/Incomplete scan/);
+  assert.match(scan.warnings[0],/Incomplete scan/);
+});
+test('missing workflow permissions are blocking but fully job-scoped permissions are recognized', () => {
+  fixture(({root,write})=>{
+    write('.github/workflows/unsafe.yml','name: Unsafe\njobs:\n  build:\n    runs-on: ubuntu-latest\n');
+    const scan=scanSources(workingTree(root));
+    assert.match(scan.securityIssues[0],/inherit unknown defaults/);
+  });
+  fixture(({root,write})=>{
+    write('.github/workflows/scoped.yml','name: Scoped\njobs:\n  build:\n    permissions:\n      contents: read\n    runs-on: ubuntu-latest\n');
+    const scan=scanSources(workingTree(root));
+    assert.deepEqual(scan.securityIssues,[]);
+    assert.deepEqual(scan.workflowPermissions['.github/workflows/scoped.yml'],['job:build']);
+  });
+});

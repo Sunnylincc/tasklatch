@@ -9,7 +9,7 @@ TaskLatch is an **open-source, task-aware authorization verification CLI** for A
 ## What it does
 
 - **Task-aware contracts:** Map an agent and task to `allow`, `deny`, and `require_approval` capability rules.
-- **Privilege drift checks:** Compare a pull request's declared and inferred capabilities with a trusted Git base.
+- **Privilege drift checks:** Compare a pull request's declared and inferred capabilities with a trusted Git base. Removing explicit GitHub Actions workflow/job token permissions is treated as a blocking potential regression, even when no new static capability is detected.
 - **Policy regression detection:** Flag changes that weaken policy protections (new allows, removed denies, or removed approvals) and newly exposed capabilities that the baseline would have denied.
 - **Policy tests:** Run reproducible, fully simulated authorization test cases.
 - **CI integration:** Publish a readable permission report to GitHub Actions' step summary without write access to pull requests.
@@ -68,6 +68,8 @@ Rules are matched in this order: `deny` → `require_approval` → `allow` → d
 }
 ```
 
+TaskLatch scans **all** supported files it discovers (there is no 300-file cutoff). It reports scanned paths, and an unreadable source fails the security check rather than silently disappearing from coverage. Individual source files remain subject to a 512 KiB safety limit; files above this limit cause an analysis error. Large repositories may require more processing time and memory.
+
 TaskLatch also scans `.claude/settings.json`, `.mcp.json`, `.cursor/mcp.json`, and `.github/workflows/*.yml` as static, best-effort sources. MCP tool capabilities are reported as **unknown**; configured servers are never executed. GitHub workflow token scopes can be inferred from static `permissions:` declarations; organization-level authorization and dynamic expressions are not verified. `shell.execute.scoped` is not a sandbox.
 
 ## Commands
@@ -79,7 +81,7 @@ node dist/cli.js test
 node dist/cli.js diff --base main --fail-on unknown --format markdown
 ```
 
-`--fail-on deny` fails on explicit/implicit denied capabilities; `approval` also fails on approval-required capabilities; `unknown` also fails on unverified capabilities. **For strict CI review, use `--fail-on unknown`.** `diff` additionally fails when a potentially weakening policy change is detected and requires review. The comparison is conservative and may require review of harmless policy rewrites.
+`--fail-on deny` fails on explicit/implicit denied capabilities; `approval` also fails on approval-required capabilities; `unknown` also fails on unverified capabilities. **For strict CI review, use `--fail-on unknown`.** `check` fails when supported GitHub workflows could inherit unknown token permissions (no explicit workflow-level permission block and at least one job without its own block). `diff` additionally fails when a previously explicit workflow-level or job-level permission declaration is removed, when a potentially weakening policy change is detected, or when either scan has blocking coverage issues. These failures apply regardless of `--fail-on`. The comparison is conservative and may require review of harmless policy rewrites.
 
 Exit codes: `0` = successful operation/no threshold breach; `1` = policy failure; `2` = invalid input or analysis error.
 
@@ -115,7 +117,7 @@ Avoid using `pull_request_target` to execute untrusted PR code. Protect policy-f
 
 ## Safety and limitations
 
-Read [SECURITY.md](SECURITY.md) and [docs/threat-model.md](docs/threat-model.md). There is **no runtime interception** in this MVP. The `test` command only evaluates policy decisions and does not make live tool/API calls. Unknown MCP semantics, alternate credentials, external authorization and dynamic command behavior remain out of scope. This is a foundation for a future enforcement adapter, not a security certification.
+Read [SECURITY.md](SECURITY.md) and [docs/threat-model.md](docs/threat-model.md). There is **no runtime interception** in this MVP. The `test` command only evaluates policy decisions and does not make live tool/API calls. Unknown MCP semantics, alternate credentials, external authorization and dynamic command behavior remain out of scope. Workflow parsing is intentionally lightweight and supports conventional workflow/job `permissions` blocks; complex YAML, unusual indentation, dynamically constructed permissions, inherited organizational defaults, and reusable workflow authorization semantics are not fully evaluated. Treat unparsed/unknown permission evidence as requiring review, and prefer `--fail-on unknown` for CI. This is a foundation for a future enforcement adapter, not a security certification.
 
 ## Contributing
 
@@ -123,7 +125,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). All code, issues, pull requests, and doc
 
 ## Project status
 
-This is the initial v0.1 open-source MVP. A green CI check verifies the build and static regression tests; it does not establish runtime authorization or make the project production security infrastructure.
+This is the v0.1 public open-source repository. Hosted CI results and release status are tracked in GitHub Actions and pull requests.
 
 ## License
 

@@ -4,7 +4,6 @@ import { execFileSync } from 'node:child_process';
 import type { Exposure, Snapshot } from './types.js';
 
 const MAX_SOURCE_BYTES = 512 * 1024;
-const MAX_SOURCES = 300;
 const knownFiles = ['.tasklatch/manifest.json', '.claude/settings.json', '.mcp.json', '.cursor/mcp.json'];
 const isWorkflow = (p: string): boolean => /^\.github\/workflows\/[a-zA-Z0-9._-]+\.ya?ml$/.test(p);
 const sourceRelevant = (p: string): boolean => knownFiles.includes(p) || isWorkflow(p);
@@ -24,7 +23,7 @@ export function workingTree(root: string): SourceReader {
           if (isWorkflow(rel)) paths.push(rel);
         }
       }
-      return paths.sort().slice(0, MAX_SOURCES);
+      return paths.sort();
     },
     read(path) {
       if (!sourceRelevant(path) || !isInside(root, path)) return undefined;
@@ -47,7 +46,7 @@ export function gitRevision(root: string, revision: string): SourceReader {
   let files: string[] | undefined;
   return {
     list() {
-      if (!files) files = git(root, ['ls-tree','-r','--name-only',resolvedSha]).split('\n').filter(sourceRelevant).slice(0, MAX_SOURCES).sort();
+      if (!files) files = git(root, ['ls-tree','-r','--name-only',resolvedSha]).split('\n').filter(sourceRelevant).sort();
       return files;
     },
     read(path) {
@@ -110,19 +109,39 @@ function parseMcp(content: string, path: string, out: Exposure[], warnings: stri
     add(out, 'mcp-client', 'unscoped', `mcp.server.${slug(name)}.tools_unknown`, path, 'unknown', 'MCP server tools were not launched or queried');
   }
 }
-function parseWorkflow(content: string, path: string, out: Exposure[], warnings: string[]): void {
+function parseWorkflow(content: string, path: string, out: Exposure[], warnings: string[], securityIssues: string[]): string[] {
   const lines = content.split(/\r?\n/);
   const agent = `workflow:${slug(basename(path).replace(/\.ya?ml$/, ''))}`;
   let blockIndent = -1;
-  let found = false;
+  let jobsIndent = -1;
+  let jobIndent = -1;
+  let currentJob: string | undefined;
+  const jobs = new Set<string>();
+  const permissionScopes = new Set<string>();
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i]!;
     const indent = raw.length - raw.trimStart().length;
     const line = raw.trim();
     if (line.startsWith('#') || line === '') continue;
     if (blockIndent >= 0 && indent <= blockIndent) blockIndent = -1;
+    if (jobsIndent >= 0 && indent <= jobsIndent) {
+      jobsIndent = -1;
+      currentJob = undefined;
+      jobIndent = -1;
+    }
+    if (indent === 0 && /^jobs\s*:/.test(line)) jobsIndent = indent;
+    else if (jobsIndent >= 0) {
+      const jobMatch = /^([a-zA-Z0-9_-]+):\s*(?:#.*)?$/.exec(line);
+      if (jobMatch && indent > jobsIndent && (jobIndent < 0 || indent <= jobIndent)) {
+        currentJob = jobMatch[1]!;
+        jobIndent = indent;
+        jobs.add(currentJob);
+      }
+    }
     if (/^permissions\s*:/.test(line)) {
-      found = true;
+      if (indent === 0) permissionScopes.add('workflow');
+      else if (currentJob && indent === jobIndent + 2) permissionScopes.add(`job:${currentJob}`);
+      else warnings.push(`${path}:${i+1}: permissions declaration outside recognized workflow/job scope`);
       const value = line.slice(line.indexOf(':') + 1).trim();
       if (value === '') blockIndent = indent;
       else if (/^(read-all|write-all)$/.test(value)) add(out, agent, 'ci', `github.token.${value}`, `${path}:${i+1}`, 'inferred');
@@ -139,20 +158,36 @@ function parseWorkflow(content: string, path: string, out: Exposure[], warnings:
       add(out, agent, 'ci', cap, `${path}:${i+1}`, 'inferred', scope === 'id-token' ? 'OIDC trust relationships are not evaluated' : undefined);
     }
   }
-  if (!found) warnings.push(`${path}: no explicit GitHub token permissions; effective defaults are unknown`);
+  if (!permissionScopes.has('workflow')) {
+    const unscoped = [...jobs].filter(job => !permissionScopes.has(`job:${job}`));
+    if (!jobs.size || unscoped.length) {
+      const reason = !jobs.size ? 'no recognized jobs or workflow-level permissions' : `jobs without explicit permissions: ${unscoped.join(', ')}`;
+      const message = `${path}: GitHub token permissions can inherit unknown defaults (${reason})`;
+      warnings.push(message);
+      securityIssues.push(message);
+    }
+  }
+  return [...permissionScopes].sort();
 }
 export function scanSources(reader: SourceReader): Snapshot {
   const exposures: Exposure[] = [];
   const warnings: string[] = [];
+  const securityIssues: string[] = [];
+  const workflowPermissions: Record<string, string[]> = {};
   const files = reader.list();
   for (const path of files) {
     const content = reader.read(path);
-    if (content === undefined) continue;
+    if (content === undefined) {
+      const message = `Incomplete scan: listed source ${path} could not be read`;
+      warnings.push(message);
+      securityIssues.push(message);
+      continue;
+    }
     try {
       if (path === '.tasklatch/manifest.json') parseManifest(content, path, exposures);
       else if (path === '.claude/settings.json') parseClaude(content, path, exposures, warnings);
       else if (path === '.mcp.json' || path === '.cursor/mcp.json') parseMcp(content, path, exposures, warnings);
-      else if (isWorkflow(path)) parseWorkflow(content, path, exposures, warnings);
+      else if (isWorkflow(path)) workflowPermissions[path] = parseWorkflow(content, path, exposures, warnings, securityIssues);
     } catch (err) {
       throw new Error(`Scan failed in ${path}: ${(err as Error).message}`);
     }
@@ -160,5 +195,5 @@ export function scanSources(reader: SourceReader): Snapshot {
   const uniq = new Map<string, Exposure>();
   for (const ex of exposures) uniq.set([ex.agent,ex.task,ex.capability,ex.source,ex.kind].join('|'), ex);
   if (!files.length || !uniq.size) warnings.push('No supported capability exposures discovered; absence of findings does not imply safety');
-  return {exposures: [...uniq.values()].sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))), warnings, files};
+  return {exposures: [...uniq.values()].sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))), warnings, files, workflowPermissions, securityIssues};
 }
