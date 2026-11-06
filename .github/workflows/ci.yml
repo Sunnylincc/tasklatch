@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install build dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Typecheck, compile, and unit test
+        run: npm run verify
+      - name: Run example policy cases
+        run: node dist/cli.js test
+      - name: Check example contracts
+        run: node dist/cli.js check --fail-on deny
