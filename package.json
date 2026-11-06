@@ -1,0 +1,21 @@
+{
+  "name": "tasklatch",
+  "version": "0.1.0",
+  "description": "Task-aware permission contracts and security regression checks for AI agents",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22" },
+  "bin": { "tasklatch": "dist/cli.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check-types": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test test/*.test.mjs",
+    "verify": "npm run build && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "~5.8.3"
+  },
+  "files": ["dist", "README.md", "LICENSE", "SECURITY.md"]
+}

@@ -1,0 +1,38 @@
+name: TaskLatch Permission Regression
+description: Compare current AI agent permissions against a Git baseline and report newly detected contract violations.
+author: TaskLatch Contributors
+inputs:
+  base:
+    description: Base commit SHA or trusted Git reference to compare against.
+    required: true
+  root:
+    description: Project root directory.
+    required: false
+    default: .
+  policy:
+    description: Path to the task-aware policy relative to the project root.
+    required: false
+    default: .tasklatch/policy.yaml
+  fail-on:
+    description: Threshold for failing on new capability findings (deny, approval, unknown).
+    required: false
+    default: deny
+runs:
+  using: composite
+  steps:
+    - name: Run TaskLatch
+      shell: bash
+      env:
+        TASKLATCH_BASE: ${{ inputs.base }}
+        TASKLATCH_ROOT: ${{ inputs.root }}
+        TASKLATCH_POLICY: ${{ inputs.policy }}
+        TASKLATCH_FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set +e
+        node "$GITHUB_ACTION_PATH/dist/cli.js" diff --root "$TASKLATCH_ROOT" --policy "$TASKLATCH_POLICY" --base "$TASKLATCH_BASE" --fail-on "$TASKLATCH_FAIL_ON" --format markdown > tasklatch-report.md
+        status=$?
+        cat tasklatch-report.md >> "$GITHUB_STEP_SUMMARY"
+        exit "$status"
+branding:
+  icon: shield
+  color: blue

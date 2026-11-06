@@ -1,0 +1,32 @@
+name: Permission Regression
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  permission-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install and build
+        run: npm install --ignore-scripts --no-audit --no-fund && npm run build
+      - name: Compare permissions against base commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set +e
+          node dist/cli.js diff --base "$BASE_SHA" --fail-on deny --format markdown > tasklatch-report.md
+          status=$?
+          cat tasklatch-report.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

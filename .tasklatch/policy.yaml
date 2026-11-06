@@ -1,0 +1,30 @@
+# The following is a self-test fixture, not a real agent permission grant.
+version: 1
+defaults:
+  unlisted: deny
+agents:
+  demo-research-agent:
+    tasks:
+      read-code:
+        allow:
+          - github.repository.read
+        deny:
+          - github.repository.write
+          - github.repository.delete
+          - vercel.production.deploy
+        require_approval:
+          - github.pull_request.merge
+  workflow:ci:
+    tasks:
+      ci:
+        allow:
+          - github.repository.read
+        deny:
+          - github.repository.write
+  workflow:permission-regression:
+    tasks:
+      ci:
+        allow:
+          - github.repository.read
+        deny:
+          - github.repository.write

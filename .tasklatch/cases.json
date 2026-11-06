@@ -1,0 +1,7 @@
+[
+  {"name":"Read repository is allowed", "agent":"demo-research-agent", "task":"read-code", "capability":"github.repository.read", "expected":"allow"},
+  {"name":"Repository modification is denied", "agent":"demo-research-agent", "task":"read-code", "capability":"github.repository.write", "expected":"deny"},
+  {"name":"Production deploy is denied", "agent":"demo-research-agent", "task":"read-code", "capability":"vercel.production.deploy", "expected":"deny"},
+  {"name":"Merging requires approval", "agent":"demo-research-agent", "task":"read-code", "capability":"github.pull_request.merge", "expected":"approval"},
+  {"name":"Unknown task is not trusted", "agent":"demo-research-agent", "task":"release", "capability":"github.repository.read", "expected":"unknown"}
+]

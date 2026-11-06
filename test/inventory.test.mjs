@@ -1,0 +1,51 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { scanSources, workingTree } from '../dist/inventory.js';
+
+function fixture(fn) {
+  const root=mkdtempSync(join(tmpdir(),'tasklatch-test-'));
+  const write=(p,contents)=> { mkdirSync(dirname(join(root,p)),{recursive:true}); writeFileSync(join(root,p),contents); };
+  try { fn({root,write}); } finally { rmSync(root,{recursive:true,force:true}); }
+}
+test('discovers manifest, Claude rules, MCP names, and workflow scopes without launching tools', () => {
+  fixture(({root,write})=>{
+    const secret='PRIVATE_MOCK_TOKEN_SHOULD_NOT_APPEAR';
+    write('.tasklatch/manifest.json',JSON.stringify({version:1,exposures:[{agent:'research-agent',task:'review-code',capability:'github.repository.read'}]}));
+    write('.claude/settings.json', JSON.stringify({permissions:{allow:['Read(./src/**)','Bash(npm test)','mcp__github__delete_repository']}}));
+    write('.mcp.json',JSON.stringify({mcpServers:{github:{command:'node',env:{GITHUB_TOKEN:secret}}}}));
+    write('.github/workflows/ci.yml','name: CI\non: pull_request\npermissions:\n  contents: read\n  id-token: write\njobs:\n  test:\n    runs-on: ubuntu-latest\n');
+    const report=scanSources(workingTree(root));
+    assert.ok(report.exposures.some(x=>x.agent==='research-agent'&&x.capability==='github.repository.read'));
+    assert.ok(report.exposures.some(x=>x.capability==='shell.execute.scoped'));
+    assert.ok(report.exposures.some(x=>x.capability==='mcp.server.github.tools_unknown'&&x.kind==='unknown'));
+    assert.ok(report.exposures.some(x=>x.capability==='github.repository.read'));
+    assert.ok(report.exposures.some(x=>x.capability==='github.oidc.write'));
+    assert.ok(!JSON.stringify(report).includes(secret));
+  });
+});
+test('MCP server is never treated as verified effective access', () => {
+  fixture(({root,write})=>{
+    write('.mcp.json',JSON.stringify({mcpServers:{payments:{url:'https://example.invalid/mcp'}}}));
+    const item=scanSources(workingTree(root)).exposures[0];
+    assert.equal(item.kind,'unknown');
+    assert.match(item.capability,/tools_unknown/);
+  });
+});
+test('no files is reported as unknown coverage', () => {
+  fixture(({root})=> {
+    const scan=scanSources(workingTree(root));
+    assert.equal(scan.exposures.length,0);
+    assert.ok(scan.warnings.some(w=>w.includes('does not imply safety')));
+  });
+});
+test('does not follow symlinked manifests', () => {
+  fixture(({root,write})=>{
+    write('private.json','{}');
+    mkdirSync(join(root,'.tasklatch'),{recursive:true});
+    symlinkSync(join(root,'private.json'),join(root,'.tasklatch/manifest.json'));
+    assert.throws(()=>scanSources(workingTree(root)),/Unsafe source file/);
+  });
+});
