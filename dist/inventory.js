@@ -143,6 +143,12 @@ function parseMcp(content, path, out, warnings) {
         add(out, 'mcp-client', 'unscoped', `mcp.server.${slug(name)}.tools_unknown`, path, 'unknown', 'MCP server tools were not launched or queried');
     }
 }
+// GitHub job identifiers may be bare or quoted YAML mapping keys.
+// Keep this deliberately narrow: unsupported forms must be reported, not silently skipped.
+function parseJobKey(line) {
+    const match = /^(?:([a-zA-Z0-9_-]+)|"([a-zA-Z0-9_-]+)"|'([a-zA-Z0-9_-]+)'):\s*(?:#.*)?$/.exec(line);
+    return match?.[1] ?? match?.[2] ?? match?.[3];
+}
 function parseWorkflow(content, path, out, warnings, securityIssues) {
     const lines = content.split(/\r?\n/);
     const agent = `workflow:${slug(basename(path).replace(/\.ya?ml$/, ''))}`;
@@ -165,14 +171,25 @@ function parseWorkflow(content, path, out, warnings, securityIssues) {
             currentJob = undefined;
             jobIndent = -1;
         }
-        if (indent === 0 && /^jobs\s*:/.test(line))
+        if (indent === 0 && /^jobs\s*:/.test(line)) {
             jobsIndent = indent;
-        else if (jobsIndent >= 0) {
-            const jobMatch = /^([a-zA-Z0-9_-]+):\s*(?:#.*)?$/.exec(line);
-            if (jobMatch && indent > jobsIndent && (jobIndent < 0 || indent <= jobIndent)) {
-                currentJob = jobMatch[1];
-                jobIndent = indent;
+            if (!/^jobs\s*:\s*(?:#.*)?$/.test(line)) {
+                const message = `${path}:${i + 1}: unsupported inline jobs declaration; permissions cannot be verified`;
+                warnings.push(message);
+                securityIssues.push(message);
+            }
+        }
+        else if (jobsIndent >= 0 && indent > jobsIndent && (jobIndent < 0 || indent <= jobIndent)) {
+            // A sibling entry under jobs must be accounted for, even if its YAML key
+            // syntax is outside this scanner's intentionally limited parser.
+            jobIndent = indent;
+            currentJob = parseJobKey(line);
+            if (currentJob)
                 jobs.add(currentJob);
+            else {
+                const message = `${path}:${i + 1}: unrecognized job declaration; permissions cannot be verified`;
+                warnings.push(message);
+                securityIssues.push(message);
             }
         }
         if (/^permissions\s*:/.test(line)) {

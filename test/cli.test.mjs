@@ -135,3 +135,21 @@ test('a permission regression in workflow 315 is still detected against the Git 
     assert.ok(JSON.parse(result.stdout).permissionRegressions.some(x=>x.includes('w314.yml')));
   }finally{rmSync(root,{recursive:true,force:true});}
 });
+
+
+test('check fails closed when a quoted job inherits token permissions alongside a scoped unquoted job',()=>{
+  const root=mkdtempSync(join(tmpdir(),'tasklatch-quoted-job-'));
+  try {
+    assert.equal(run(root,'init').status,0);
+    mkdirSync(join(root,'.github/workflows'),{recursive:true});
+    const file=join(root,'.github/workflows/release.yml');
+    writeFileSync(file,'name: Release\njobs:\n  build:\n    permissions:\n      contents: read\n    runs-on: ubuntu-latest\n  "release":\n    runs-on: ubuntu-latest\n');
+    const bad=run(root,'check','--format','json');
+    assert.equal(bad.status,1,bad.stdout+bad.stderr);
+    assert.ok(JSON.parse(bad.stdout).securityIssues.some(s=>s.includes('release')));
+    writeFileSync(file,'name: Release\njobs:\n  build:\n    permissions:\n      contents: read\n    runs-on: ubuntu-latest\n  "release":\n    permissions:\n      contents: read\n    runs-on: ubuntu-latest\n');
+    const good=run(root,'check','--format','json');
+    assert.equal(good.status,0,good.stdout+good.stderr);
+    assert.deepEqual(JSON.parse(good.stdout).securityIssues,[]);
+  } finally { rmSync(root,{recursive:true,force:true}); }
+});

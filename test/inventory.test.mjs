@@ -78,3 +78,32 @@ test('missing workflow permissions are blocking but fully job-scoped permissions
     assert.deepEqual(scan.workflowPermissions['.github/workflows/scoped.yml'],['job:build']);
   });
 });
+
+
+test('quoted and unquoted job names are both counted when checking inherited token permissions', () => {
+  fixture(({root,write})=>{
+    write('.github/workflows/mixed.yml', 'name: Mixed\njobs:\n  build:\n    permissions:\n      contents: read\n    runs-on: ubuntu-latest\n  "release":\n    runs-on: ubuntu-latest\n');
+    const scan=scanSources(workingTree(root));
+    assert.deepEqual(scan.workflowPermissions['.github/workflows/mixed.yml'], ['job:build']);
+    assert.ok(scan.securityIssues.some(s=>s.includes('jobs without explicit permissions: release')));
+  });
+  fixture(({root,write})=>{
+    write('.github/workflows/scoped-quoted.yml', 'jobs:\n  build:\n    permissions:\n      contents: read\n  "release":\n    permissions:\n      contents: read\n  \'deploy\':\n    permissions:\n      contents: read\n');
+    const scan=scanSources(workingTree(root));
+    assert.deepEqual(scan.securityIssues, []);
+    assert.deepEqual(scan.workflowPermissions['.github/workflows/scoped-quoted.yml'], ['job:build','job:deploy','job:release']);
+  });
+});
+
+test('unrecognized jobs declarations block the scan rather than disappearing', () => {
+  fixture(({root,write})=>{
+    write('.github/workflows/unsupported.yml', 'jobs:\n  build:\n    permissions:\n      contents: read\n  "release build":\n    runs-on: ubuntu-latest\n');
+    const scan=scanSources(workingTree(root));
+    assert.ok(scan.securityIssues.some(s=>s.includes('unrecognized job declaration')));
+  });
+  fixture(({root,write})=>{
+    write('.github/workflows/inline.yml', 'permissions:\n  contents: read\njobs: { build: { runs-on: ubuntu-latest } }\n');
+    const scan=scanSources(workingTree(root));
+    assert.ok(scan.securityIssues.some(s=>s.includes('unsupported inline jobs declaration')));
+  });
+});
