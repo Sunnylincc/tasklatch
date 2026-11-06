@@ -35,4 +35,12 @@ export interface PolicyCase {
   expected: Decision;
   name?: string;
 }
-export interface Snapshot { exposures: Exposure[]; warnings: string[]; files: string[]; }
+export interface Snapshot {
+  exposures: Exposure[];
+  warnings: string[];
+  files: string[];
+  /** Explicit permission declaration scopes for each supported GitHub workflow. */
+  workflowPermissions?: Record<string, string[]>;
+  /** Coverage gaps that must never be treated as a successful security check. */
+  securityIssues?: string[];
+}

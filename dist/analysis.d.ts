@@ -11,6 +11,10 @@ export interface DiffReport {
         change: string;
     }>;
     warnings: string[];
+    /** Changes that may broaden inherited GitHub token permissions. */
+    permissionRegressions: string[];
+    /** Unresolved source coverage / authorization uncertainty in either snapshot. */
+    securityIssues: string[];
 }
 export declare function diffSnapshots(before: Snapshot, after: Snapshot, baseline: Policy | undefined, current: Policy | undefined): DiffReport;
 export declare const shouldFail: (findings: Finding[], failOn: "deny" | "approval" | "unknown") => boolean;

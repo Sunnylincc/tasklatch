@@ -56,9 +56,24 @@ export function diffSnapshots(before, after, baseline, current) {
                     contractExpansions.push({ agent, task, pattern: '*', change: 'contract_removed' });
             }
     }
+    const permissionRegressions = [];
+    for (const [path, previousScopes] of Object.entries(before.workflowPermissions ?? {})) {
+        const currentScopes = after.workflowPermissions?.[path];
+        if (!currentScopes)
+            continue; // A removed workflow cannot acquire token permissions.
+        for (const scope of previousScopes) {
+            if (!currentScopes.includes(scope)) {
+                permissionRegressions.push(`${path}: explicit GitHub Actions permissions removed from ${scope}; inherited permissions may be broader`);
+            }
+        }
+    }
+    const securityIssues = [
+        ...(before.securityIssues ?? []).map(issue => `Base: ${issue}`),
+        ...(after.securityIssues ?? []).map(issue => `Head: ${issue}`)
+    ];
     return {
         added, removed, retained: before.exposures.length - removed.length,
-        contractExpansions,
+        contractExpansions, permissionRegressions, securityIssues,
         warnings: [...before.warnings.map(w => `Base: ${w}`), ...after.warnings.map(w => `Head: ${w}`)]
     };
 }

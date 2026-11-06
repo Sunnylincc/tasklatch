@@ -2,7 +2,6 @@ import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { basename, join, relative, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 const MAX_SOURCE_BYTES = 512 * 1024;
-const MAX_SOURCES = 300;
 const knownFiles = ['.tasklatch/manifest.json', '.claude/settings.json', '.mcp.json', '.cursor/mcp.json'];
 const isWorkflow = (p) => /^\.github\/workflows\/[a-zA-Z0-9._-]+\.ya?ml$/.test(p);
 const sourceRelevant = (p) => knownFiles.includes(p) || isWorkflow(p);
@@ -22,7 +21,7 @@ export function workingTree(root) {
                         paths.push(rel);
                 }
             }
-            return paths.sort().slice(0, MAX_SOURCES);
+            return paths.sort();
         },
         read(path) {
             if (!sourceRelevant(path) || !isInside(root, path))
@@ -52,7 +51,7 @@ export function gitRevision(root, revision) {
     return {
         list() {
             if (!files)
-                files = git(root, ['ls-tree', '-r', '--name-only', resolvedSha]).split('\n').filter(sourceRelevant).slice(0, MAX_SOURCES).sort();
+                files = git(root, ['ls-tree', '-r', '--name-only', resolvedSha]).split('\n').filter(sourceRelevant).sort();
             return files;
         },
         read(path) {
@@ -144,11 +143,21 @@ function parseMcp(content, path, out, warnings) {
         add(out, 'mcp-client', 'unscoped', `mcp.server.${slug(name)}.tools_unknown`, path, 'unknown', 'MCP server tools were not launched or queried');
     }
 }
-function parseWorkflow(content, path, out, warnings) {
+// GitHub job identifiers may be bare or quoted YAML mapping keys.
+// Keep this deliberately narrow: unsupported forms must be reported, not silently skipped.
+function parseJobKey(line) {
+    const match = /^(?:([a-zA-Z0-9_-]+)|"([a-zA-Z0-9_-]+)"|'([a-zA-Z0-9_-]+)'):\s*(?:#.*)?$/.exec(line);
+    return match?.[1] ?? match?.[2] ?? match?.[3];
+}
+function parseWorkflow(content, path, out, warnings, securityIssues) {
     const lines = content.split(/\r?\n/);
     const agent = `workflow:${slug(basename(path).replace(/\.ya?ml$/, ''))}`;
     let blockIndent = -1;
-    let found = false;
+    let jobsIndent = -1;
+    let jobIndent = -1;
+    let currentJob;
+    const jobs = new Set();
+    const permissionScopes = new Set();
     for (let i = 0; i < lines.length; i++) {
         const raw = lines[i];
         const indent = raw.length - raw.trimStart().length;
@@ -157,8 +166,39 @@ function parseWorkflow(content, path, out, warnings) {
             continue;
         if (blockIndent >= 0 && indent <= blockIndent)
             blockIndent = -1;
+        if (jobsIndent >= 0 && indent <= jobsIndent) {
+            jobsIndent = -1;
+            currentJob = undefined;
+            jobIndent = -1;
+        }
+        if (indent === 0 && /^jobs\s*:/.test(line)) {
+            jobsIndent = indent;
+            if (!/^jobs\s*:\s*(?:#.*)?$/.test(line)) {
+                const message = `${path}:${i + 1}: unsupported inline jobs declaration; permissions cannot be verified`;
+                warnings.push(message);
+                securityIssues.push(message);
+            }
+        }
+        else if (jobsIndent >= 0 && indent > jobsIndent && (jobIndent < 0 || indent <= jobIndent)) {
+            // A sibling entry under jobs must be accounted for, even if its YAML key
+            // syntax is outside this scanner's intentionally limited parser.
+            jobIndent = indent;
+            currentJob = parseJobKey(line);
+            if (currentJob)
+                jobs.add(currentJob);
+            else {
+                const message = `${path}:${i + 1}: unrecognized job declaration; permissions cannot be verified`;
+                warnings.push(message);
+                securityIssues.push(message);
+            }
+        }
         if (/^permissions\s*:/.test(line)) {
-            found = true;
+            if (indent === 0)
+                permissionScopes.add('workflow');
+            else if (currentJob && indent === jobIndent + 2)
+                permissionScopes.add(`job:${currentJob}`);
+            else
+                warnings.push(`${path}:${i + 1}: permissions declaration outside recognized workflow/job scope`);
             const value = line.slice(line.indexOf(':') + 1).trim();
             if (value === '')
                 blockIndent = indent;
@@ -183,17 +223,31 @@ function parseWorkflow(content, path, out, warnings) {
             add(out, agent, 'ci', cap, `${path}:${i + 1}`, 'inferred', scope === 'id-token' ? 'OIDC trust relationships are not evaluated' : undefined);
         }
     }
-    if (!found)
-        warnings.push(`${path}: no explicit GitHub token permissions; effective defaults are unknown`);
+    if (!permissionScopes.has('workflow')) {
+        const unscoped = [...jobs].filter(job => !permissionScopes.has(`job:${job}`));
+        if (!jobs.size || unscoped.length) {
+            const reason = !jobs.size ? 'no recognized jobs or workflow-level permissions' : `jobs without explicit permissions: ${unscoped.join(', ')}`;
+            const message = `${path}: GitHub token permissions can inherit unknown defaults (${reason})`;
+            warnings.push(message);
+            securityIssues.push(message);
+        }
+    }
+    return [...permissionScopes].sort();
 }
 export function scanSources(reader) {
     const exposures = [];
     const warnings = [];
+    const securityIssues = [];
+    const workflowPermissions = {};
     const files = reader.list();
     for (const path of files) {
         const content = reader.read(path);
-        if (content === undefined)
+        if (content === undefined) {
+            const message = `Incomplete scan: listed source ${path} could not be read`;
+            warnings.push(message);
+            securityIssues.push(message);
             continue;
+        }
         try {
             if (path === '.tasklatch/manifest.json')
                 parseManifest(content, path, exposures);
@@ -202,7 +256,7 @@ export function scanSources(reader) {
             else if (path === '.mcp.json' || path === '.cursor/mcp.json')
                 parseMcp(content, path, exposures, warnings);
             else if (isWorkflow(path))
-                parseWorkflow(content, path, exposures, warnings);
+                workflowPermissions[path] = parseWorkflow(content, path, exposures, warnings, securityIssues);
         }
         catch (err) {
             throw new Error(`Scan failed in ${path}: ${err.message}`);
@@ -213,5 +267,5 @@ export function scanSources(reader) {
         uniq.set([ex.agent, ex.task, ex.capability, ex.source, ex.kind].join('|'), ex);
     if (!files.length || !uniq.size)
         warnings.push('No supported capability exposures discovered; absence of findings does not imply safety');
-    return { exposures: [...uniq.values()].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), warnings, files };
+    return { exposures: [...uniq.values()].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), warnings, files, workflowPermissions, securityIssues };
 }

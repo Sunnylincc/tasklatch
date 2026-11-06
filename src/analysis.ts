@@ -20,6 +20,10 @@ export interface DiffReport {
   retained: number;
   contractExpansions: Array<{agent:string; task:string; pattern:string; change: string}>;
   warnings: string[];
+  /** Changes that may broaden inherited GitHub token permissions. */
+  permissionRegressions: string[];
+  /** Unresolved source coverage / authorization uncertainty in either snapshot. */
+  securityIssues: string[];
 }
 export function diffSnapshots(before: Snapshot, after: Snapshot, baseline: Policy | undefined, current: Policy | undefined): DiffReport {
   const baseMap = new Map(before.exposures.map(e => [key(e), e]));
@@ -58,9 +62,23 @@ export function diffSnapshots(before: Snapshot, after: Snapshot, baseline: Polic
       if (!current.agents[agent]?.tasks[task]) contractExpansions.push({agent, task, pattern: '*', change: 'contract_removed'});
     }
   }
+  const permissionRegressions: string[] = [];
+  for (const [path, previousScopes] of Object.entries(before.workflowPermissions ?? {})) {
+    const currentScopes = after.workflowPermissions?.[path];
+    if (!currentScopes) continue; // A removed workflow cannot acquire token permissions.
+    for (const scope of previousScopes) {
+      if (!currentScopes.includes(scope)) {
+        permissionRegressions.push(`${path}: explicit GitHub Actions permissions removed from ${scope}; inherited permissions may be broader`);
+      }
+    }
+  }
+  const securityIssues = [
+    ...(before.securityIssues ?? []).map(issue => `Base: ${issue}`),
+    ...(after.securityIssues ?? []).map(issue => `Head: ${issue}`)
+  ];
   return {
     added, removed, retained: before.exposures.length - removed.length,
-    contractExpansions,
+    contractExpansions, permissionRegressions, securityIssues,
     warnings: [...before.warnings.map(w=>`Base: ${w}`), ...after.warnings.map(w=>`Head: ${w}`)]
   };
 }

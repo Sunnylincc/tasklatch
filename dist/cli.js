@@ -92,11 +92,11 @@ function mdTable(findings) {
 }
 function renderCheck(snapshot, findings, format) {
     if (format === 'json') {
-        console.log(JSON.stringify({ findings, warnings: snapshot.warnings, scannedFiles: snapshot.files }, null, 2));
+        console.log(JSON.stringify({ findings, warnings: snapshot.warnings, securityIssues: snapshot.securityIssues ?? [], scannedFiles: snapshot.files }, null, 2));
         return;
     }
     if (format === 'markdown') {
-        console.log('## TaskLatch authorization check\n\n' + mdTable(findings) + '\n' + snapshot.warnings.map(w => `- ${escapeMd(w)}`).join('\n') + '\n\n*Static checks only; not runtime enforcement.*');
+        console.log('## TaskLatch authorization check\n\n' + mdTable(findings) + '\n' + (snapshot.securityIssues?.length ? '**Blocking security issues:**\n' + snapshot.securityIssues.map(w => `- ${escapeMd(w)}`).join('\n') + '\n' : '') + snapshot.warnings.map(w => `- ${escapeMd(w)}`).join('\n') + '\n\n*Static checks only; not runtime enforcement.*');
         return;
     }
     console.log(`TaskLatch: ${findings.length} capability exposure(s); ${snapshot.files.length} scanned file(s)`);
@@ -104,6 +104,8 @@ function renderCheck(snapshot, findings, format) {
         console.log(formatFinding(f));
     for (const w of snapshot.warnings)
         console.log(`WARN: ${w}`);
+    for (const issue of snapshot.securityIssues ?? [])
+        console.log(`SECURITY ERROR: ${issue}`);
 }
 function renderDiff(report, format) {
     if (format === 'json') {
@@ -114,6 +116,8 @@ function renderDiff(report, format) {
         console.log('## TaskLatch permission regression report\n\n' +
             `New: ${report.added.length} | Removed: ${report.removed.length} | Retained: ${report.retained}\n\n` +
             mdTable(report.added) + '\n' +
+            (report.permissionRegressions.length ? '**GitHub workflow permission regressions (blocking):**\n' + report.permissionRegressions.map(x => `- ${escapeMd(x)}`).join('\n') + '\n\n' : '') +
+            (report.securityIssues.length ? '**Unresolved security coverage (blocking):**\n' + report.securityIssues.map(x => `- ${escapeMd(x)}`).join('\n') + '\n\n' : '') +
             (report.contractExpansions.length ? '**Potential policy weakenings requiring review:**\n' + report.contractExpansions.map(x => `- ${escapeMd(x.agent)}/${escapeMd(x.task)} (${escapeMd(x.change)}): ${escapeMd(x.pattern)}`).join('\n') : 'No potential policy weakening detected.') + '\n\n' +
             report.warnings.map(w => `- ${escapeMd(w)}`).join('\n') + '\n\n*No actual MCP servers or external tools were executed.*');
         return;
@@ -125,6 +129,10 @@ function renderDiff(report, format) {
         console.log(`- ${e.agent}/${e.task} ${e.capability}`);
     for (const e of report.contractExpansions)
         console.log(`POLICY REVIEW: ${e.agent}/${e.task} ${e.change} ${e.pattern}`);
+    for (const regression of report.permissionRegressions)
+        console.log(`PERMISSION REGRESSION: ${regression}`);
+    for (const issue of report.securityIssues)
+        console.log(`SECURITY ERROR: ${issue}`);
     for (const warning of report.warnings)
         console.log(`WARN: ${warning}`);
 }
@@ -196,13 +204,18 @@ function main() {
         for (const warning of snapshot.warnings)
             if (format !== 'json')
                 console.log('WARN: ' + warning);
+        for (const issue of snapshot.securityIssues ?? [])
+            if (format !== 'json')
+                console.log('SECURITY ERROR: ' + issue);
+        if ((snapshot.securityIssues?.length ?? 0) > 0)
+            process.exitCode = 1;
         return;
     }
     const policy = readPolicy(root, policyName);
     if (cmd === 'check') {
         const findings = check(snapshot, policy);
         renderCheck(snapshot, findings, format);
-        if (shouldFail(findings, failOn) || snapshot.exposures.length === 0)
+        if (shouldFail(findings, failOn) || snapshot.exposures.length === 0 || (snapshot.securityIssues?.length ?? 0) > 0)
             process.exitCode = 1;
         return;
     }
@@ -212,7 +225,7 @@ function main() {
     const oldPolicy = readBasePolicy(root, opts.base, policyName);
     const report = diffSnapshots(before, snapshot, oldPolicy, policy);
     renderDiff(report, format);
-    if (shouldFail(report.added, failOn) || report.contractExpansions.length || snapshot.exposures.length === 0)
+    if (shouldFail(report.added, failOn) || report.contractExpansions.length || report.permissionRegressions.length || report.securityIssues.length || snapshot.exposures.length === 0)
         process.exitCode = 1;
 }
 try {
